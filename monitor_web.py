@@ -1953,10 +1953,10 @@ def main():
     print(f"\n=> http://localhost:{PORT}", flush=True)
     print("Ctrl+C 停止\n", flush=True)
 
-    try:
-        # os.system(f'cmd.exe /c start http://localhost:{PORT}')
-    except Exception:
-        pass
+    # try:
+    #     os.system(f'cmd.exe /c start http://localhost:{PORT}')
+    # except Exception:
+    #     pass
 
     try:
         server.serve_forever()
