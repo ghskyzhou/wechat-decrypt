@@ -1350,6 +1350,10 @@ class SessionMonitor:
                     print(f"[{msg['time']} 延迟={msg_age:.1f}s] [{msg['chat']}] {sender}: {msg['content']}  ({tag})", flush=True)
                 else:
                     print(f"[{msg['time']} 延迟={msg_age:.1f}s] [{msg['chat']}] {msg['content']}  ({tag})", flush=True)
+                print(f"TEST: {msg}", flush=True)
+                from send_bark import send_to_bark
+                print(send_to_bark(msg))
+
             except Exception:
                 pass  # Windows CMD编码问题，不影响SSE推送
 
@@ -1893,7 +1897,7 @@ def main():
     enc_key = bytes.fromhex(session_key_info["enc_key"])
     session_db = os.path.join(DB_DIR, "session", "session.db")
 
-    print("加载联系人...", flush=True)
+    print("加载联系人...?", flush=True)
     contact_names = load_contact_names()
     print(f"已加载 {len(contact_names)} 个联系人", flush=True)
 

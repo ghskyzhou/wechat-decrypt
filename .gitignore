@@ -19,7 +19,9 @@ run_hook.bat
 __pycache__/
 *.py[cod]
 *.egg-info/
+venv/
 
 # OS
 .DS_Store
 Thumbs.db
+run.bat
