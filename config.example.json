@@ -2,5 +2,6 @@
     "db_dir": "D:\\xwechat_files\\your_wxid\\db_storage",
     "keys_file": "all_keys.json",
     "decrypted_dir": "decrypted",
-    "wechat_process": "Weixin.exe"
+    "wechat_process": "Weixin.exe",
+    "bark_api_key": "your_bark_api_key"
 }
