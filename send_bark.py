@@ -49,6 +49,10 @@ def check_bark(msg):
     content = msg.get('content', '')
     chat_title = msg.get('chat', '微信消息')
     sender = msg.get('chat')
+    unread = msg.get('unread')
+
+    if unread == 0:
+        return "正在使用微信，无需推送"
     print("SENDER: ", sender)
 
     bark_cfg = load_bark_config()

@@ -6,7 +6,7 @@ http://localhost:5678
 - 检测到变化后：全量解密DB + 全量WAL patch
 - SSE 服务器推送
 """
-import hashlib, struct, os, sys, json, time, sqlite3, io, threading, queue, traceback, subprocess
+import hashlib, struct, os, sys, json, time, sqlite3, io, threading, queue, traceback, subprocess, webbrowser
 import hmac as hmac_mod
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -1578,11 +1578,33 @@ def main():
     # print("Ctrl+C 停止\n", flush=True)
 
     try:
-        print("正在启动网页后台……")
-        os.system("start python bark_editor.py")
-        # subprocess.Popen(["pythonw", "bark_editor.py"])
-        os.system(f'cmd.exe /c start http://localhost:{BART_PORT}')
-    except Exception:
+        print("正在静默启动网页后台……")
+        cmd = [sys.executable, "bark_editor.py"]
+        # 判断当前操作系统
+        if os.name == 'nt':
+            # === Windows 环境 ===
+            CREATE_NO_WINDOW = 0x08000000
+            subprocess.Popen(
+                cmd, 
+                creationflags=CREATE_NO_WINDOW,
+                stdout=subprocess.DEVNULL, # 把 Flask 的无用输出吃掉
+                stderr=subprocess.DEVNULL
+            )
+        else:
+            # === Linux / macOS 环境 ===
+            subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL, # 不让网页后台的日志污染你当前的终端屏幕
+                stderr=subprocess.DEVNULL,
+                start_new_session=True     # 关键！脱离当前终端会话，让它成为真正的后台守护进程
+            )
+        
+        time.sleep(0.5) 
+        print("正在打开浏览器...")
+        # 自动识别系统并调用默认浏览器，完美兼容 Win/Mac/Linux
+        webbrowser.open(f'http://localhost:{BART_PORT}')
+        
+    except Exception as e:
         print(f"启动失败了: {e}")
 
     try:
