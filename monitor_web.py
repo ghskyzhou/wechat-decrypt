@@ -6,7 +6,7 @@ http://localhost:5678
 - 检测到变化后：全量解密DB + 全量WAL patch
 - SSE 服务器推送
 """
-import hashlib, struct, os, sys, json, time, sqlite3, io, threading, queue, traceback
+import hashlib, struct, os, sys, json, time, sqlite3, io, threading, queue, traceback, subprocess
 import hmac as hmac_mod
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -43,6 +43,7 @@ IMAGE_XOR_KEY = _cfg.get("image_xor_key", 0x88)  # XOR key
 
 POLL_MS = 30  # 高频轮询WAL/DB的mtime，30ms一次
 PORT = 5678
+BART_PORT = 1145
 
 sse_clients = []
 sse_lock = threading.Lock()
@@ -1351,8 +1352,8 @@ class SessionMonitor:
                 else:
                     print(f"[{msg['time']} 延迟={msg_age:.1f}s] [{msg['chat']}] {msg['content']}  ({tag})", flush=True)
                 print(f"TEST: {msg}", flush=True)
-                from send_bark import send_to_bark
-                print(send_to_bark(msg))
+                from send_bark import check_bark
+                print(check_bark(msg))
 
             except Exception:
                 pass  # Windows CMD编码问题，不影响SSE推送
@@ -1422,383 +1423,6 @@ def monitor_thread(enc_key, session_db, contact_names, db_cache=None, username_d
 
 # ============ Web ============
 
-HTML_PAGE = '''<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>微信消息监听</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#0a0a0f;color:#e0e0e0;height:100vh;display:flex;flex-direction:column}
-.header{background:linear-gradient(135deg,#1a1a2e,#16213e);padding:14px 24px;border-bottom:1px solid rgba(255,255,255,.08);display:flex;align-items:center;gap:12px;flex-shrink:0}
-.header h1{font-size:18px;font-weight:600;background:linear-gradient(90deg,#4fc3f7,#81c784);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
-.status{font-size:12px;padding:4px 10px;border-radius:12px;transition:all .3s}
-.status.ok{background:rgba(76,175,80,.15);color:#81c784;border:1px solid rgba(76,175,80,.3)}
-.status.ok::before{content:'';display:inline-block;width:6px;height:6px;border-radius:50%;background:#4caf50;margin-right:6px;animation:pulse 2s infinite}
-.status.err{background:rgba(244,67,54,.15);color:#ef9a9a;border:1px solid rgba(244,67,54,.3)}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
-.stats{margin-left:auto;font-size:12px;color:#666;display:flex;gap:16px}
-.messages{flex:1;overflow-y:auto;padding:12px}
-.msg{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);border-radius:10px;padding:10px 14px;margin-bottom:5px;transition:transform .3s ease}
-.msg:hover{background:rgba(255,255,255,.05)}
-.msg.hl{border-left:3px solid #4fc3f7;background:rgba(79,195,247,.05);animation:slideIn .3s cubic-bezier(.22,1,.36,1)}
-@keyframes slideIn{from{opacity:0;transform:translateY(-20px) scale(.98)}to{opacity:1;transform:translateY(0) scale(1)}}
-.msg-header{display:flex;align-items:center;gap:8px;margin-bottom:3px}
-.msg-time{font-size:11px;color:#555;font-family:"SF Mono",Monaco,monospace;min-width:55px}
-.msg-chat{font-weight:600;color:#4fc3f7;font-size:13px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.msg-chat.grp{color:#ce93d8}
-.msg-sender{font-size:12px;color:#999}
-.msg-r{margin-left:auto;display:flex;gap:6px;align-items:center}
-.msg-type{font-size:10px;padding:2px 5px;border-radius:3px;background:rgba(255,255,255,.06);color:#777}
-.msg-unread{font-size:10px;padding:1px 6px;border-radius:8px;background:rgba(244,67,54,.2);color:#ef9a9a;font-weight:600}
-.msg-perf{font-size:9px;color:#333}
-.msg-content{font-size:13px;line-height:1.4;color:#bbb;word-break:break-all;padding-left:63px}
-.msg-img{max-width:300px;max-height:200px;border-radius:8px;cursor:pointer;margin-top:4px;transition:transform .2s}
-.msg-img:hover{transform:scale(1.02)}
-.msg-emoji{max-width:120px;max-height:120px;border-radius:4px;margin-top:2px}
-.msg-link{display:inline-block;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:8px 12px;margin-top:4px;max-width:400px;cursor:pointer;transition:background .2s}
-.msg-link:hover{background:rgba(255,255,255,.1)}
-.msg-link-title{font-size:13px;color:#4fc3f7;font-weight:500;line-height:1.3}
-.msg-link-des{font-size:11px;color:#888;margin-top:3px;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.msg-link-src{font-size:10px;color:#555;margin-top:4px}
-.msg-quote{background:rgba(255,255,255,.04);border-left:2px solid #666;padding:4px 8px;margin-top:4px;border-radius:0 6px 6px 0}
-.msg-quote-ref{font-size:11px;color:#777;margin-bottom:3px}
-.msg-quote-ref b{color:#999;font-weight:500}
-.msg-file{display:inline-flex;align-items:center;gap:8px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:8px 12px;margin-top:4px}
-.msg-file-icon{font-size:24px}
-.msg-file-name{font-size:13px;color:#ccc}
-.msg-file-size{font-size:11px;color:#666}
-.msg-voice{display:inline-flex;align-items:center;gap:6px;background:rgba(76,175,80,.1);border:1px solid rgba(76,175,80,.2);border-radius:16px;padding:6px 14px;margin-top:4px}
-.msg-video{display:inline-flex;align-items:center;gap:6px;background:rgba(79,195,247,.08);border:1px solid rgba(79,195,247,.15);border-radius:8px;padding:6px 12px;margin-top:4px}
-.msg-chatlog{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:8px 12px;margin-top:4px;max-width:450px}
-.chatlog-body{margin-top:6px;border-top:1px solid rgba(255,255,255,.06);padding-top:6px}
-.chatlog-item{font-size:12px;color:#999;line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.chatlog-item b{color:#bbb;font-weight:500}
-.chatlog-more{font-size:11px;color:#555;margin-top:4px}
-a.msg-link{text-decoration:none;color:inherit}
-#lightbox{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.92);z-index:1000;cursor:zoom-out;justify-content:center;align-items:center}
-#lightbox.show{display:flex}
-#lightbox img{max-width:95vw;max-height:95vh;object-fit:contain;border-radius:4px;box-shadow:0 4px 30px rgba(0,0,0,.5)}
-.empty{text-align:center;padding:80px 20px;color:#444}
-.empty .icon{font-size:48px;margin-bottom:12px}
-::-webkit-scrollbar{width:4px}
-::-webkit-scrollbar-thumb{background:rgba(255,255,255,.08);border-radius:2px}
-/* 设置面板 */
-.settings-btn{background:none;border:1px solid rgba(255,255,255,.15);color:#888;font-size:16px;cursor:pointer;padding:4px 8px;border-radius:6px;transition:all .2s}
-.settings-btn:hover{color:#ccc;border-color:rgba(255,255,255,.3)}
-.settings-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:900}
-.settings-overlay.show{display:block}
-.settings-panel{position:fixed;top:0;right:-420px;width:400px;height:100%;background:#12121a;border-left:1px solid rgba(255,255,255,.1);z-index:901;transition:right .3s ease;display:flex;flex-direction:column;overflow:hidden}
-.settings-panel.show{right:0}
-.sp-header{padding:16px 20px;border-bottom:1px solid rgba(255,255,255,.08);display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
-.sp-header h2{font-size:16px;color:#e0e0e0;font-weight:600}
-.sp-close{background:none;border:none;color:#666;font-size:20px;cursor:pointer;padding:4px 8px}
-.sp-close:hover{color:#ccc}
-.sp-body{flex:1;overflow-y:auto;padding:16px 20px}
-.sp-section{margin-bottom:20px}
-.sp-section h3{font-size:13px;color:#888;margin-bottom:10px;text-transform:uppercase;letter-spacing:1px}
-.sp-toggle{display:flex;align-items:center;justify-content:space-between;padding:8px 0}
-.sp-toggle label{font-size:13px;color:#ccc}
-.switch{position:relative;width:40px;height:22px;flex-shrink:0}
-.switch input{display:none}
-.switch .slider{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:#333;border-radius:11px;transition:.3s}
-.switch input:checked+.slider{background:#4caf50}
-.switch .slider:before{content:'';position:absolute;height:16px;width:16px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.3s}
-.switch input:checked+.slider:before{transform:translateX(18px)}
-.rule-card{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:12px;margin-bottom:10px}
-.rule-card .rule-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
-.rule-card .rule-del{background:none;border:none;color:#666;cursor:pointer;font-size:14px;padding:2px 6px}
-.rule-card .rule-del:hover{color:#ef5350}
-.rule-card input[type=text]{width:100%;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:4px;padding:6px 8px;color:#ccc;font-size:12px;margin-bottom:6px;outline:none}
-.rule-card input[type=text]:focus{border-color:rgba(79,195,247,.5)}
-.rule-card input[type=text]::placeholder{color:#555}
-.rule-opts{display:flex;gap:12px;margin-top:4px}
-.rule-opts label{font-size:11px;color:#999;display:flex;align-items:center;gap:4px;cursor:pointer}
-.rule-opts input[type=checkbox]{accent-color:#4caf50}
-.add-rule-btn{width:100%;padding:8px;background:rgba(79,195,247,.1);border:1px dashed rgba(79,195,247,.3);border-radius:6px;color:#4fc3f7;font-size:12px;cursor:pointer;transition:all .2s}
-.add-rule-btn:hover{background:rgba(79,195,247,.2)}
-/* 通知高亮 */
-.msg.notify-hl{border-left:3px solid #ffd54f;background:rgba(255,213,79,.08);box-shadow:0 0 12px rgba(255,213,79,.1)}
-</style>
-</head>
-<body>
-<div class="header">
-<h1>WeChat Monitor</h1>
-<div class="status ok" id="st">SSE 实时</div>
-<div class="stats"><span id="cnt">0 消息</span><span id="perf"></span></div>
-<button class="settings-btn" onclick="toggleSettings()" title="通知设置">⚙️</button>
-</div>
-<div class="settings-overlay" id="settingsOverlay" onclick="toggleSettings()"></div>
-<div class="settings-panel" id="settingsPanel">
-<div class="sp-header"><h2>通知设置</h2><button class="sp-close" onclick="toggleSettings()">&times;</button></div>
-<div class="sp-body">
-<div class="sp-section">
-<h3>全局</h3>
-<div class="sp-toggle"><label>启用通知过滤</label><label class="switch"><input type="checkbox" id="notifyEnabled" onchange="saveNotifySettings()"><span class="slider"></span></label></div>
-<div class="sp-toggle"><label>声音提醒</label><label class="switch"><input type="checkbox" id="soundEnabled" onchange="saveNotifySettings()"><span class="slider"></span></label></div>
-</div>
-<div class="sp-section">
-<h3>规则</h3>
-<div id="rulesContainer"></div>
-<button class="add-rule-btn" onclick="addRule()">+ 添加规则</button>
-</div>
-</div>
-</div>
-<div id="lightbox" onclick="this.classList.remove('show')"><img id="lb-img" /></div>
-<div class="messages" id="msgs">
-<div class="empty" id="empty"><div class="icon">📡</div><p>等待新消息...</p><p style="margin-top:6px;font-size:11px;color:#333">WAL增量解密 · SSE推送</p></div>
-</div>
-<script>
-let n=0;
-const M=document.getElementById('msgs'), S=document.getElementById('st');
-const seen = new Set();  // 去重: timestamp+username
-let sseReady = false;
-
-function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
-const WX_EMOJI={'微笑':'😊','撇嘴':'😣','色':'😍','发呆':'😳','得意':'😎','流泪':'😢','害羞':'😳','闭嘴':'🤐','睡':'😴','大哭':'😭','尴尬':'😅','发怒':'😡','调皮':'😜','呲牙':'😁','惊讶':'😮','难过':'😞','酷':'😎','冷汗':'😰','抓狂':'😫','吐':'🤮','偷笑':'🤭','可爱':'🥰','白眼':'🙄','傲慢':'😤','饥饿':'🤤','困':'😪','惊恐':'😨','流汗':'😓','憨笑':'😄','大兵':'🫡','奋斗':'💪','咒骂':'🤬','疑问':'❓','嘘':'🤫','晕':'😵','折磨':'😩','衰':'😥','骷髅':'💀','敲打':'🔨','再见':'👋','擦汗':'😓','抠鼻':'🤏','鼓掌':'👏','糗大了':'😳','坏笑':'😏','左哼哼':'😤','右哼哼':'😤','哈欠':'🥱','鄙视':'😒','委屈':'🥺','快哭了':'🥺','阴险':'😈','亲亲':'😘','吓':'😱','可怜':'🥺','菜刀':'🔪','西瓜':'🍉','啤酒':'🍺','篮球':'🏀','乒乓':'🏓','咖啡':'☕','饭':'🍚','猪头':'🐷','玫瑰':'🌹','凋谢':'🥀','示爱':'💗','爱心':'❤️','心碎':'💔','蛋糕':'🎂','闪电':'⚡','炸弹':'💣','刀':'🔪','足球':'⚽','瓢虫':'🐞','便便':'💩','月亮':'🌙','太阳':'☀️','礼物':'🎁','拥抱':'🤗','强':'👍','弱':'👎','握手':'🤝','胜利':'✌️','抱拳':'🙏','勾引':'👆','拳头':'✊','差劲':'👎','爱你':'🤟','NO':'🙅','OK':'👌','爱情':'💑','飞吻':'😘','跳跳':'💃','发抖':'🥶','怄火':'😤','转圈':'💫','磕头':'🙇','回头':'🔙','跳绳':'🏃','挥手':'👋','激动':'🤩','街舞':'💃','献吻':'😘','左太极':'☯️','右太极':'☯️','嘿哈':'😆','捂脸':'🤦','奸笑':'😏','机智':'🤓','皱眉':'😟','耶':'✌️','红包':'🧧','鸡':'🐔','Emm':'🤔','加油':'💪','汗':'😓','天啊':'😱','社会社会':'🤙','旺柴':'🐕','好的':'👌','打脸':'🤦','哇':'😲','翻白眼':'🙄','666':'👍','让我看看':'👀','叹气':'😮‍💨','苦涩':'😣','裂开':'💔','嘴唇':'💋','爱心':'❤️','破涕为笑':'😂'};
-function wxEmoji(text){
-  return text.replace(/\\[([^\\]]{1,4})\\]/g, (m,k)=>WX_EMOJI[k]||m);
-}
-function linkify(text){
-  return text.replace(/(https?:\\/\\/[^\\s<>"'\\]\\)]+)/g, '<a href="$1" target="_blank" rel="noopener" style="color:#4fc3f7;text-decoration:underline">$1</a>');
-}
-function fmtSize(b){
-  if(b<1024) return b+'B';
-  if(b<1048576) return (b/1024).toFixed(1)+'KB';
-  return (b/1048576).toFixed(1)+'MB';
-}
-function renderRich(r){
-  if(!r) return null;
-  if(r.type==='emoji' && r.emoji_url) return `<img class="msg-emoji" src="${esc(r.emoji_url)}" onerror="this.outerHTML='<span style=\\'color:#999\\'>😀 [表情]</span>'" />`;
-  if(r.type==='link') {
-    let src = r.source ? '<div class="msg-link-src">'+esc(r.source)+'</div>' : '';
-    return `<a href="${esc(r.url)}" target="_blank" rel="noopener" class="msg-link"><div class="msg-link-title">🔗 ${esc(r.title)}</div>${r.des?'<div class="msg-link-des">'+esc(r.des)+'</div>':''}${src}</a>`;
-  }
-  if(r.type==='file') return `<div class="msg-file"><span class="msg-file-icon">📄</span><div><div class="msg-file-name">${esc(r.title)}</div><div class="msg-file-size">${r.file_ext?r.file_ext.toUpperCase()+' · ':''}${fmtSize(r.file_size)}</div></div></div>`;
-  if(r.type==='quote') return `<div class="msg-quote"><div class="msg-quote-ref">↩ <b>${esc(r.ref_name)}</b>: ${esc(r.ref_content)}</div><div>${esc(r.title)}</div></div>`;
-  if(r.type==='miniapp') return `<div class="msg-link"><div class="msg-link-title">🟢 ${esc(r.title)}</div>${r.source?'<div class="msg-link-src">小程序 · '+esc(r.source)+'</div>':''}</div>`;
-  if(r.type==='channels') return `<div class="msg-video"><span>📺</span> ${esc(r.title)} <span style="color:#666;font-size:11px">视频号</span></div>`;
-  if(r.type==='chatlog') {
-    let items = r.items||[];
-    let body = '';
-    if(items.length>0) {
-      let preview = items.slice(0,4).map(it=>'<div class="chatlog-item"><b>'+esc(it.name)+'</b>: '+esc(it.text)+'</div>').join('');
-      let more = items.length>4 ? '<div class="chatlog-more">... 共'+items.length+'条消息</div>' : '';
-      body = '<div class="chatlog-body">'+preview+more+'</div>';
-    } else if(r.des) {
-      body = '<div class="msg-link-des">'+esc(r.des)+'</div>';
-    }
-    return `<div class="msg-chatlog"><div class="msg-link-title">📋 ${esc(r.title)}</div>${body}</div>`;
-  }
-  if(r.type==='voice') return `<div class="msg-voice">🎤 语音 ${r.duration}s</div>`;
-  if(r.type==='video') return `<div class="msg-video">🎬 视频${r.duration?' '+r.duration+'s':''}</div>`;
-  return null;
-}
-function showLightbox(url){
-  const lb=document.getElementById('lightbox'), img=document.getElementById('lb-img');
-  img.src=url;
-  lb.classList.add('show');
-}
-function renderContent(m){
-  if(m.image_url) return `<img class="msg-img" src="${m.image_url}" onclick="showLightbox('${m.image_url}')" onerror="this.style.display='none';this.nextElementSibling.style.display='inline'" /><span style="display:none">${esc(m.content||'')}</span>`;
-  const richHtml = renderRich(m.rich);
-  if(richHtml) return richHtml;
-  const raw = esc(m.content||'');
-  return linkify(wxEmoji(raw));
-}
-
-// ---- 通知过滤 ----
-const DEFAULT_NOTIFY = {enabled:false, sound_enabled:true, rules:[]};
-function loadNotifySettings(){
-  try{ return JSON.parse(localStorage.getItem('wechat_notify'))||DEFAULT_NOTIFY; }catch(e){ return DEFAULT_NOTIFY; }
-}
-function saveNotifySettings(){
-  const s = {
-    enabled: document.getElementById('notifyEnabled').checked,
-    sound_enabled: document.getElementById('soundEnabled').checked,
-    rules: collectRules()
-  };
-  localStorage.setItem('wechat_notify', JSON.stringify(s));
-}
-function collectRules(){
-  const rules=[];
-  document.querySelectorAll('.rule-card').forEach(card=>{
-    const inputs=card.querySelectorAll('input[type=text]');
-    const checks=card.querySelectorAll('input[type=checkbox]');
-    rules.push({
-      group_name: inputs[0]?.value||'',
-      sender_name: inputs[1]?.value||'',
-      notify_on_any: checks[0]?.checked||false
-    });
-  });
-  return rules;
-}
-function renderRules(){
-  const s=loadNotifySettings();
-  document.getElementById('notifyEnabled').checked=s.enabled;
-  document.getElementById('soundEnabled').checked=s.sound_enabled;
-  const c=document.getElementById('rulesContainer');
-  c.innerHTML='';
-  (s.rules||[]).forEach((_,i)=>addRuleCard(s.rules[i]));
-}
-function addRuleCard(r){
-  r=r||{group_name:'',sender_name:'',notify_on_any:true};
-  const c=document.getElementById('rulesContainer');
-  const d=document.createElement('div');
-  d.className='rule-card';
-  d.innerHTML=`<div class="rule-header"><span style="font-size:12px;color:#888">规则 #${c.children.length+1}</span><button class="rule-del" onclick="this.closest('.rule-card').remove();saveNotifySettings()">&times;</button></div><input type="text" placeholder="群名（模糊匹配）" value="${esc(r.group_name)}" onchange="saveNotifySettings()"><input type="text" placeholder="发送人（可选，模糊匹配）" value="${esc(r.sender_name)}" onchange="saveNotifySettings()"><div class="rule-opts"><label><input type="checkbox" ${r.notify_on_any?'checked':''} onchange="saveNotifySettings()"> 匹配时通知</label></div>`;
-  c.appendChild(d);
-}
-function addRule(){addRuleCard();saveNotifySettings();}
-function toggleSettings(){
-  const p=document.getElementById('settingsPanel'),o=document.getElementById('settingsOverlay');
-  const show=!p.classList.contains('show');
-  p.classList.toggle('show',show);
-  o.classList.toggle('show',show);
-  if(show) renderRules();
-}
-function beep(){
-  try{
-    const ctx=new(window.AudioContext||window.webkitAudioContext)();
-    const osc=ctx.createOscillator();
-    const gain=ctx.createGain();
-    osc.connect(gain);gain.connect(ctx.destination);
-    osc.frequency.value=880;gain.gain.value=0.3;
-    osc.start();osc.stop(ctx.currentTime+0.15);
-  }catch(e){}
-}
-function checkNotifyMatch(m){
-  const s=loadNotifySettings();
-  if(!s.enabled||!s.rules||!s.rules.length) return false;
-  const chat=(m.chat||'').toLowerCase();
-  const sender=(m.sender||'').toLowerCase();
-  for(const r of s.rules){
-    if(!r.group_name) continue;
-    if(!chat.includes(r.group_name.toLowerCase())) continue;
-    if(r.sender_name && !sender.includes(r.sender_name.toLowerCase())) continue;
-    if(r.notify_on_any) return true;
-  }
-  return false;
-}
-function sendNotification(m){
-  const title=m.chat+(m.sender?' - '+m.sender:'');
-  const body=(m.content||'').slice(0,100);
-  if(Notification.permission==='granted'){
-    new Notification(title,{body,icon:'📡'});
-  }else if(Notification.permission!=='denied'){
-    Notification.requestPermission().then(p=>{if(p==='granted') new Notification(title,{body,icon:'📡'});});
-  }
-  const s=loadNotifySettings();
-  if(s.sound_enabled) beep();
-}
-
-function addMsg(m, animate){
-  // 去重（包含类型，避免同时间戳的文字+图片组合被误判重复）
-  const key = m.timestamp + '|' + (m.username||m.chat) + '|' + (m.type||'');
-  if(seen.has(key)) return;
-  seen.add(key);
-
-  const x=document.getElementById('empty');
-  if(x) x.remove();
-
-  n++;
-  document.getElementById('cnt').textContent=n+' 消息';
-  if(m.decrypt_ms!=null) document.getElementById('perf').textContent=m.pages+'页/'+m.decrypt_ms+'ms';
-
-  const d=document.createElement('div');
-  d.className = animate ? 'msg hl' : 'msg';
-
-  const sn=m.sender?`<span class="msg-sender">${esc(m.sender)}</span>`:'';
-  const ur=m.unread>0?`<span class="msg-unread">${m.unread}</span>`:'';
-  const cc=m.is_group?'msg-chat grp':'msg-chat';
-
-  let contentHtml = renderContent(m);
-
-  const dk=m.timestamp+'|'+(m.username||m.chat);
-  d.innerHTML=`<div class="msg-header"><span class="msg-time">${m.time}</span><span class="${cc}">${esc(m.chat)}</span>${sn}<div class="msg-r"><span class="msg-type">${m.type_icon} ${m.type}</span>${ur}</div></div><div class="msg-content" data-key="${dk}">${contentHtml}</div>`;
-
-  // 通知匹配检查
-  if(animate && checkNotifyMatch(m)){
-    d.classList.add('notify-hl');
-    sendNotification(m);
-    setTimeout(()=>d.classList.remove('notify-hl'), 10000);
-  }
-
-  M.insertBefore(d, M.firstChild);
-
-  if(animate){
-    setTimeout(()=>d.classList.remove('hl'), 3000);
-    document.title='('+n+') 微信监听';
-  }
-
-  // 限制最多200条
-  while(M.children.length>200) M.removeChild(M.lastChild);
-}
-
-// 页面加载时请求通知权限
-if('Notification' in window && Notification.permission==='default'){
-  Notification.requestPermission();
-}
-
-function connectSSE(){
-  const es=new EventSource('/stream');
-  es.onopen=()=>{
-    S.textContent='SSE 实时';
-    S.className='status ok';
-    sseReady=true;
-  };
-  es.onmessage=ev=>{
-    addMsg(JSON.parse(ev.data), true);  // 新消息有动画
-  };
-  es.addEventListener('image_update', ev=>{
-    const d=JSON.parse(ev.data);
-    const key=d.timestamp+'|'+(d.username||'');
-    const msgs=M.querySelectorAll('.msg');
-    for(const el of msgs){
-      const ct=el.querySelector('.msg-content');
-      if(ct && ct.dataset.key===key){
-        if(d.v2_unsupported){
-          ct.innerHTML='<span style="color:#999;font-style:italic">[图片 - 新加密格式暂不支持预览]</span>';
-        } else if(d.image_url){
-          ct.innerHTML=`<img class="msg-img" src="${d.image_url}" onclick="showLightbox('${d.image_url}')" onerror="this.style.display='none'" />`;
-        }
-        break;
-      }
-    }
-  });
-  es.addEventListener('rich_update', ev=>{
-    const d=JSON.parse(ev.data);
-    const key=d.timestamp+'|'+(d.username||'');
-    for(const el of M.querySelectorAll('.msg')){
-      const ct=el.querySelector('.msg-content');
-      if(ct && ct.dataset.key===key){
-        const html=renderRich(d.rich);
-        if(html) ct.innerHTML=html;
-        break;
-      }
-    }
-  });
-  es.onerror=()=>{
-    S.textContent='重连...';
-    S.className='status err';
-    sseReady=false;
-    es.close();
-    setTimeout(connectSSE, 2000);  // 重连不清页面
-  };
-}
-
-// 启动: 加载历史(无动画) → 连接SSE(有动画)
-fetch('/api/history').then(r=>r.json()).then(ms=>{
-  ms.sort((a,b)=>a.timestamp-b.timestamp);
-  ms.forEach(m=>addMsg(m, false));  // 历史消息无动画
-  connectSSE();
-});
-</script>
-</body>
-</html>'''
-
-
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def handle(self):
@@ -1812,7 +1436,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.end_headers()
-            self.wfile.write(HTML_PAGE.encode('utf-8'))
+            # self.wfile.write(HTML_PAGE.encode('utf-8'))
 
         elif self.path == '/api/history':
             with messages_lock:
@@ -1950,13 +1574,16 @@ def main():
     t.start()
 
     server = ThreadedServer(('0.0.0.0', PORT), Handler)
-    print(f"\n=> http://localhost:{PORT}", flush=True)
-    print("Ctrl+C 停止\n", flush=True)
+    # print(f"\n=> http://localhost:{PORT}", flush=True)
+    # print("Ctrl+C 停止\n", flush=True)
 
-    # try:
-    #     os.system(f'cmd.exe /c start http://localhost:{PORT}')
-    # except Exception:
-    #     pass
+    try:
+        print("正在启动网页后台……")
+        os.system("start python bark_editor.py")
+        # subprocess.Popen(["pythonw", "bark_editor.py"])
+        os.system(f'cmd.exe /c start http://localhost:{BART_PORT}')
+    except Exception:
+        print(f"启动失败了: {e}")
 
     try:
         server.serve_forever()

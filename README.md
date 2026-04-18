@@ -2,6 +2,8 @@
 
 本项目所有内容基于 [wechat-decrypt](https://github.com/L1en2407/wechat-decrypt)，拓展制作 Bark 相关功能仅为了个人实行 Information Reduction，无其他目的。
 
+**在使用本项目之前，请先详细阅读原项目的 `README.md`！**
+
 微信 4.0 (Windows、MacOS、Linux) 本地数据库解密工具。从运行中的微信进程内存提取加密密钥，解密所有 SQLCipher 4 加密数据库，并提供实时消息监听。
 
 ## 更新日志

@@ -2,6 +2,7 @@
 all_keys.json
 wechat_key.txt
 config.json
+bark_config.json
 decrypted/
 decoded_images/
 *.db
