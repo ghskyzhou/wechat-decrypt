@@ -18,7 +18,6 @@
 
 - Python 3.10+
 - 微信 4.x
-- `pip install pycryptodome`
 
 Windows：
 
@@ -35,7 +34,7 @@ Linux：
 ### 安装依赖
 
 ```bash
-pip install pycryptodome, requests, flask
+pip install pycryptodome zstandard requests flask
 ```
 
 ### 快速开始
@@ -51,9 +50,9 @@ pip install pycryptodome, requests, flask
 }
 ```
 
-> 关于这个 Bark API Key 的获取，方法放在了最下面
+这里这个 `db_dir` 原则上会自动获取，但也会出现获取不到的情况需要手动填入。
 
-Windows：
+> 关于这个 Bark API Key 的获取，方法放在了最下面
 
 先使用
 
