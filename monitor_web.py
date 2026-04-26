@@ -9,6 +9,7 @@ http://localhost:5678
 import hashlib, struct, os, sys, json, time, sqlite3, io, threading, queue, traceback, subprocess, webbrowser
 import hmac as hmac_mod
 from concurrent.futures import ThreadPoolExecutor
+import threading
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
@@ -52,6 +53,7 @@ messages_lock = threading.Lock()
 MAX_LOG = 500
 _img_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix='img')
 _hidden_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='hidden')
+_bark_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="bark")
 
 # ---- Emoji 缓存 (md5 → {cdn_url, aes_key, encrypt_url}) ----
 _emoji_lookup = {}       # md5 → dict
@@ -527,6 +529,15 @@ def _convert_hevc_to_jpeg(hevc_path, jpeg_path):
     except Exception as e:
         print(f"  [img] HEVC→JPEG 失败: {e}", flush=True)
     return None
+
+def bark_done(future):
+    """线程完成后打印结果"""
+    try:
+        result = future.result()
+        if result:
+            print(f"[Bark] {result}", flush=True)
+    except Exception as e:
+        print(f"[Bark] 异常: {e}", flush=True)
 
 
 # ============ 监听器 ============
@@ -1353,7 +1364,8 @@ class SessionMonitor:
                     print(f"[{msg['time']} 延迟={msg_age:.1f}s] [{msg['chat']}] {msg['content']}  ({tag})", flush=True)
                 print(f"TEST: {msg}", flush=True)
                 from send_bark import check_bark
-                print(check_bark(msg))
+                future = _bark_executor.submit(check_bark, msg)
+                future.add_done_callback(bark_done)
 
             except Exception:
                 pass  # Windows CMD编码问题，不影响SSE推送
